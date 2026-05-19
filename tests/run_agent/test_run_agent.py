@@ -3374,6 +3374,35 @@ class TestRunConversation:
         assert result["api_calls"] == 3
         assert result["completed"] is False
 
+    def test_length_structured_reasoning_without_visible_content_skips_continuation(self, agent):
+        """Structured reasoning-only length truncation should short-circuit.
+
+        Providers like GLM/Kimi/MiniMax can return reasoning via dedicated
+        fields while leaving assistant content empty. Retrying those turns just
+        grows context and repeats the failure.
+        """
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content=None,
+            finish_reason="length",
+            reasoning_content="Internal chain of thought",
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        assert "output tokens" in result["error"].lower()
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(
