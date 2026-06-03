@@ -15,6 +15,7 @@ Exposes the full 15-verb surface documented in the design spec
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shlex
@@ -933,7 +934,9 @@ def _cmd_tail(args: argparse.Namespace) -> int:
     print(f"Tailing events for {args.task_id}. Ctrl-C to stop.")
     try:
         while True:
-            with kb.connect() as conn:
+            # sqlite3.Connection.__enter__ only scopes transactions; it does
+            # not close the handle on loop exit.
+            with contextlib.closing(kb.connect()) as conn:
                 events = kb.list_events(conn, args.task_id)
             for e in events:
                 if e.id > last_id:
@@ -1135,7 +1138,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     cursor = 0
     print("Watching kanban events. Ctrl-C to stop.", flush=True)
     # Seed cursor at the latest id so we don't replay history.
-    with kb.connect() as conn:
+    with contextlib.closing(kb.connect()) as conn:
         row = conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS m FROM task_events"
         ).fetchone()
@@ -1143,7 +1146,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
     try:
         while True:
-            with kb.connect() as conn:
+            with contextlib.closing(kb.connect()) as conn:
                 rows = conn.execute(
                     "SELECT e.id, e.task_id, e.kind, e.payload, e.created_at, "
                     "       t.assignee, t.tenant "

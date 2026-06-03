@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -172,6 +173,88 @@ def test_run_slash_link_unlink(kanban_home):
     show = kc.run_slash(f"show {tb}")
     assert "todo" in show
     assert "Unlinked" in kc.run_slash(f"unlink {ta} {tb}")
+
+
+class TestStreamingCommands:
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchone(self):
+            return self._rows[0]
+
+        def fetchall(self):
+            return self._rows
+
+    class _FakeConn:
+        def __init__(self, rows):
+            self._rows = rows
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            return TestStreamingCommands._FakeCursor(self._rows)
+
+        def close(self):
+            self.closed = True
+
+    def test_tail_closes_sqlite_like_connection_each_poll(self, monkeypatch, capsys):
+        created = [
+            self._FakeConn([]),
+            self._FakeConn([]),
+        ]
+        remaining = created.copy()
+        monkeypatch.setattr(kc.kb, "connect", lambda: remaining.pop(0))
+        monkeypatch.setattr(kc.kb, "list_events", lambda *_args, **_kwargs: [])
+
+        ticks = {"n": 0}
+
+        def fake_sleep(_interval):
+            ticks["n"] += 1
+            if ticks["n"] >= 2:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(kc.time, "sleep", fake_sleep)
+
+        rc = kc._cmd_tail(SimpleNamespace(task_id="T1", interval=0.0))
+
+        assert rc == 0
+        assert ticks["n"] == 2
+        assert all(conn.closed for conn in created)
+        assert "(stopped)" in capsys.readouterr().out
+
+    def test_watch_closes_sqlite_like_connection_each_poll(self, monkeypatch, capsys):
+        created: list[TestStreamingCommands._FakeConn] = []
+
+        def fake_connect():
+            rows = [{"m": 0}] if not created else []
+            conn = self._FakeConn(rows)
+            created.append(conn)
+            return conn
+
+        monkeypatch.setattr(kc.kb, "connect", fake_connect)
+
+        ticks = {"n": 0}
+
+        def fake_sleep(_interval):
+            ticks["n"] += 1
+            if ticks["n"] >= 1:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(kc.time, "sleep", fake_sleep)
+
+        rc = kc._cmd_watch(SimpleNamespace(kinds=None, follow=False, interval=0.0))
+
+        assert rc == 0
+        assert ticks["n"] == 1
+        assert len(created) == 2
+        assert all(conn.closed for conn in created)
+        assert "(stopped)" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
